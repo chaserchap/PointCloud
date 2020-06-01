@@ -6,7 +6,11 @@ file4 = "/media/sf_RECON/CA_SanDiego_2005/CA_SanDiego_las/CA_SanDiego_2005_00038
 files = [file1, file2, file3, file4]
 
 test_pipe = {
-        "pipeline": [{"type": "filters.pmf"},
+        "pipeline": [{"type": "filters.cluster"},
+                     {"type": "filters.covariancefeatures",
+                      "knn": 8,
+                      "threads": 2},
+                     {"type": "filters.pmf"},
                      {"type": "filters.hag"},
                      {"type": "filters.eigenvalues",
                       "knn": 16},

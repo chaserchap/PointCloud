@@ -4,10 +4,17 @@ import shutil
 import laspy
 import numpy as np
 import matplotlib.pyplot as plt
+import pylab as pl
+from descartes import PolygonPatch
+from scipy.spatial import Delaunay
+from shapely.ops import cascaded_union, polygonize
+import shapely.geometry as geometry
 from sklearn.cluster import DBSCAN
 from sklearn import preprocessing
 
 import sys
+import math
+import warnings
 
 def frange(start, stop, step):
     i = start
@@ -19,7 +26,7 @@ def ground_points_grid_filter(dataset, z_height=None, z_factor=10, n=None, x_ste
     """Determine ground points using a grid.
 
     Prevents identification of large hills/mountains as VOs by identifying height ranges at a more granular level."""
-    dataset_z_filtered = dataset[[0]]
+
 
     if z_height is not None:
         z_filter = z_height
@@ -28,8 +35,9 @@ def ground_points_grid_filter(dataset, z_height=None, z_factor=10, n=None, x_ste
     else:
         raise ValueError("Please provide a value for either z_height or z_factor, but not both.")
 
-    point_index = np.arange(0, len(dataset.shape[0]))
+    point_index = np.arange(0, dataset.shape[0])
     dataset = np.insert(dataset, 3, point_index, axis=1)
+    dataset_z_filtered = dataset[[0]]
 
     if n is not None:
         sys.stdout.write("Using n to determine xstep and ystep.\n")
@@ -59,7 +67,7 @@ def ground_points_grid_filter(dataset, z_height=None, z_factor=10, n=None, x_ste
     sys.stdout.write("Found {0} points exceeding z-threshold.".format(dataset_z_filtered.shape[0]))
 
     point_index[:] = 0
-    point_index[dataset[:, 3].astype(int)] = 1
+    point_index[dataset_z_filtered[:, 3].astype(int)] = 1
 
     return point_index.astype(bool)
 
@@ -69,7 +77,8 @@ def dbscan_cluster(dataset, eps=None, min_samples=5, normalize = False):
         # all values being within similar ranges.
         dataset = preprocessing.normalize(dataset)
     if eps is None:
-        eps = dataset.median() - 1e-8 # Subtract to place eps below median (even if barely).
+        eps = 10 # Using the median as below resulted in too large an epsilon. Need to find a better estimate.
+        # eps = np.median(dataset[:, 0:3]) - 1e-8 # Subtract to place eps below median (even if barely).
         # Best would likely be to determine eps with respect to the dataset, following some kind of distance graph.
         # Might be able to determine a good setting based on metaparameters. Such as eps from lidar point spacing.
         #
@@ -84,17 +93,21 @@ def dbscan_cluster(dataset, eps=None, min_samples=5, normalize = False):
     sys.stdout.write("Found {0} clusters in the data. With {1} noise points.\n".format(n_clusters_, n_noise_))
     return clustering
 
-def visualize(dataset, cluster, labels = None):
+def visualize(dataset, cluster=None, labels = None):
 
     if labels is not None and dataset.shape[0] != len(labels):
         raise ValueError("Number of labels not equal to number of data points.")
-
-    if labels is None:
+    if labels is None and cluster is not None:
         labels = cluster.labels_
+    elif labels is None and cluster is None:
+        labels = np.zeros(dataset.shape[0])
 
-    core_samples_mask = np.zeros_like(cluster.labels_, dtype=bool)
+    core_samples_mask = np.zeros_like(labels, dtype=bool)
 
-    core_samples_mask[cluster.core_sample_indices_] = True
+    if cluster is not None:
+        core_samples_mask[cluster.core_sample_indices_] = True
+    else:
+        core_samples_mask[:] = True
 
     n_clusters_ = len(set(labels)) - (1 if -1 in labels else 0)
 
@@ -134,7 +147,7 @@ def check_pole(data, width=20):
 def powerlines(filtered_dataset):
     """Run dbscan twice to identify powerlines vs powerpoles."""
     line_cluster = dbscan_cluster(filtered_dataset[:,0:2], eps=50, min_samples=4) # eps and min_samples may vary...
-    pole_cluster = dbscan_cluster(filtered_dataset[:,0:2], eps=10, min_samples=10)
+    pole_cluster = dbscan_cluster(filtered_dataset[:,0:3], eps=20, min_samples=15)
 
     pole_labels = pole_cluster.labels_
     pole_unique_labels = set(pole_labels)
@@ -258,6 +271,151 @@ def create_results(file, z_feet=None, z_factor=10, n=None, x_step=15, y_step=15,
     # groundFile = laspy.file.File(ground_file, mode='w', header=inFile.header)
     # groundFile.x = dataset[ground_file][:, 0]
     # groundFile.y = dataset[ground_file][:, ]
+
+def geometric_median(X, numIter = 200):
+    """
+    Compute the geometric median of a point sample.
+    The geometric median coordinates will be expressed in the Spatial Image reference system (not in real world metrics).
+    We use the Weiszfeld's algorithm (http://en.wikipedia.org/wiki/Geometric_median)
+
+    :Parameters:
+     - `X` (list|np.array) - voxels coordinate (3xN matrix)
+     - `numIter` (int) - limit the length of the search for global optimum
+
+    :Return:
+     - np.array((x,y,z)): geometric median of the coordinates;
+    """
+    # -- Initialising 'median' to the centroid
+    y = np.mean(X, 1)
+    # -- If the init point is in the set of points, we shift it:
+
+    if X.shape[1] == 3:
+        three_d = True
+        while (y[0] in X[:, 0]) and (y[1] in X[:, 1]) and (y[2] in X[:, 2]):
+            y+=0.1
+    elif X.shape[0] == 2:
+        three_d = False
+        while (y[0] in X[:, 0]) and (y[1] in X[:, 1]):
+            y += 0.1
+
+    convergence = False  # boolean testing the convergence toward a global optimum
+    dist = []  # list recording the distance evolution
+
+    # -- Minimizing the sum of the squares of the distances between each points in 'X' and the median.
+    i = 0
+    while (not convergence) and (i < numIter):
+        num_x, num_y, num_z = 0.0, 0.0, 0.0
+        denum = 0.0
+        m = X.shape[1]
+        d = 0
+        for j in range(0,m):
+            if three_d:
+                div = math.sqrt((X[j, 0]-y[0])**2 + (X[j, 1]-y[1])**2 + (X[j, 2]-y[2])**2)
+                num_z += X[j, 2] / div
+            else:
+                div = math.sqrt((X[j, 0]-y[0])**2 + (X[j, 1]-y[1])**2)
+            num_x += X[j, 0] / div
+            num_y += X[j, 1] / div
+            denum += 1./div
+            d += div**2  # distance (to the median) to miminize
+        dist.append(d)  # update of the distance evolution
+
+        if denum == 0.:
+            warnings.warn("Couldn't compute a geometric median, please check your data!")
+            return [0, 0, 0]
+
+        if three_d:
+            y = [num_x/denum, num_y/denum, num_z/denum]  # update to the new value of the median
+        else:
+            y = [num_x/denum, num_y/denum]
+        if i > 3:
+            convergence = (abs(dist[i]-dist[i-2]) < 0.1)  # we test the convergence over three steps for stability
+            #~ print abs(dist[i]-dist[i-2]), convergence
+        i += 1
+    if i == numIter:
+        raise ValueError("The Weiszfeld's algoritm did not converged after"+str(numIter)+"iterations !!!!!!!!!" )
+    # -- When convergence or iterations limit is reached we assume that we found the median.
+
+    return np.array(y)
+
+    def add_edge(edges, edge_points, coords, i, j):
+        """
+        Add a line between the i-th and j-th points,
+        if not in the list already
+        """
+        if (i, j) in edges or (j, i) in edges:
+            # already added
+            return
+        edges.add((i, j))
+        edge_points.append(coords[[i, j]])
+
+def alpha_shape(points, alpha):
+    """
+    Compute the alpha shape (concave hull) of a set
+    of points.
+    @param points: Iterable container of points.
+    @param alpha: alpha value to influence the
+        gooeyness of the border. Smaller numbers
+        don't fall inward as much as larger numbers.
+        Too large, and you lose everything!
+    """
+    if len(points) < 4:
+        # When you have a triangle, there is no sense
+        # in computing an alpha shape.
+        return geometry.MultiPoint(list(points)).convex_hull
+
+    def add_edge(edges, edge_points, coords, i, j):
+        """
+        Add a line between the i-th and j-th points,
+        if not in the list already
+        """
+        if (i, j) in edges or (j, i) in edges:
+            # already added
+            return
+        edges.add((i, j))
+        edge_points.append(coords[[i, j]])
+    coords = np.array([point.coords[0] for point in points])
+    tri = Delaunay(coords)
+    edges = set()
+    edge_points = []
+    # loop over triangles:
+    # ia, ib, ic = indices of corner points of the
+    # triangle
+    for ia, ib, ic in tri.vertices:
+        pa = coords[ia]
+        pb = coords[ib]
+        pc = coords[ic]
+        # Lengths of sides of triangle
+        a = math.sqrt((pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2)
+        b = math.sqrt((pb[0] - pc[0]) ** 2 + (pb[1] - pc[1]) ** 2)
+        c = math.sqrt((pc[0] - pa[0]) ** 2 + (pc[1] - pa[1]) ** 2)
+        # Semiperimeter of triangle
+        s = (a + b + c) / 2.0
+        # Area of triangle by Heron's formula
+        area = math.sqrt(s * (s - a) * (s - b) * (s - c))
+        circum_r = a * b * c / (4.0 * area)
+        # Here's the radius filter
+        # print circum_r
+        if circum_r < 1.0 / alpha:
+            add_edge(edges, edge_points, coords, ia, ib)
+            add_edge(edges, edge_points, coords, ib, ic)
+            add_edge(edges, edge_points, coords, ic, ia)
+    m = geometry.MultiLineString(edge_points)
+    triangles = list(polygonize(m))
+    return cascaded_union(triangles), edge_points
+
+def plot_polygon(polygon):
+    fig = pl.figure(figsize=(10,10))
+    ax = fig.add_subplot(111)
+    margin = .3
+    x_min, y_min, x_max, y_max = polygon.bounds
+    ax.set_xlim([x_min-margin, x_max+margin])
+    ax.set_ylim([y_min-margin, y_max+margin])
+    patch = PolygonPatch(polygon, fc='#999999',
+                         ec='#000000', fill=True,
+                         zorder=-1)
+    ax.add_patch(patch)
+    return fig
 
 if __name__ == "__main__":
     destination = "/mnt/RECON/AeroResults/SanDiego"
