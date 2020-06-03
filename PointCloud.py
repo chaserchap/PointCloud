@@ -105,7 +105,12 @@ class PointCloud:
         return self.candidate_vos
 
     def run_classifier(self):
-        self.classifier.prepare_data(self.arrays)
+        array = self.arrays
+        if self.use_adj_points:
+            array['X'] = self.adj_points[:, 0]
+            array['Y'] = self.adj_points[:, 1]
+            array['Z'] = self.adj_points[:, 2]
+        self.classifier.prepare_data(array)
         self.classes = self.classifier.classify_data()
 
     def group_class(self, class_id=None, class_name=None):
