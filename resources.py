@@ -11,7 +11,7 @@ test_pipe = {
                       "knn": 8,
                       "threads": 2},
                      {"type": "filters.pmf"},
-                     {"type": "filters.hag"},
+                     {"type": "filters.hag_nn"},
                      {"type": "filters.eigenvalues",
                       "knn": 16},
                      {"type": "filters.normal",

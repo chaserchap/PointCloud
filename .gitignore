@@ -144,6 +144,9 @@ tmp/*
 
 # Conda?
 .idea/
+data/
+envs/
+.idea/Aero.iml
 
 # Models
 *.sav
