@@ -146,6 +146,8 @@ def check_pole(data, width=20):
 
 def powerlines(filtered_dataset):
     """Run dbscan twice to identify powerlines vs powerpoles."""
+    if filtered_dataset.size == 0:
+        return False
     line_cluster = dbscan_cluster(filtered_dataset[:,0:2], eps=50, min_samples=4) # eps and min_samples may vary...
     pole_cluster = dbscan_cluster(filtered_dataset[:,0:3], eps=20, min_samples=15)
 
