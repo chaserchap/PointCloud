@@ -1,7 +1,5 @@
-import sys
-
 from PointCloud import PointCloud
-from resources import *
+from src.resources.resources import *
 from pc_tools import *
 
 

@@ -150,3 +150,8 @@ envs/
 
 # Models
 *.sav
+*.dat
+
+# Login info
+creds.py
+config.py
